@@ -64,6 +64,7 @@ export type ReplyToolAuthorityInput = {
       | "traceAuthorized"
       | "approvalReviewerDeviceId"
       | "authProfileId"
+      | "authProfileIdSource"
       | "clientCaps"
       | "toolBindings"
     >
@@ -258,7 +259,10 @@ function resolveReplyToolAuthorityInputFingerprint(
         bashElevated: execution.bashElevated,
         traceAuthorized: execution.traceAuthorized === true,
         approvalReviewerDeviceId: execution.approvalReviewerDeviceId,
-        authProfileId: execution.authProfileId,
+        // Auto rotation changes transport credentials, not policy; hashing its ID breaks steering.
+        // Explicit ("user") and legacy (undefined source) selections stay strict.
+        authProfileId:
+          execution.authProfileIdSource === "auto" ? undefined : execution.authProfileId,
         clientCaps: [...new Set(execution.clientCaps ?? [])].toSorted(),
         toolBindings: execution.toolBindings,
       }),

@@ -230,6 +230,42 @@ function createMediaFollowupRun(overrides: Parameters<typeof createMockFollowupR
   return followupRun;
 }
 
+function createActiveReplyOperation(run: FollowupRun): ReplyOperation {
+  const operation = createRegisteredReplyOperation({
+    sessionKey: "main",
+    sessionId: run.run.sessionId,
+    resetTriggered: false,
+  });
+  operation.setPhase("running");
+  operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
+  return operation;
+}
+
+async function expectAuthProfileMismatchQueued(source: "user" | undefined) {
+  const activeRun = createMediaFollowupRun({
+    prompt: "generate chart",
+    run: { authProfileId: "profile-a", authProfileIdSource: source },
+  });
+  const followupRun = createMediaFollowupRun({
+    prompt: "generate chart",
+    run: { ...activeRun.run, authProfileId: "profile-b", authProfileIdSource: source },
+  });
+
+  await runReplyAgent(
+    makeRunReplyAgentParams({
+      resolvedQueue: { mode: "steer" } as QueueSettings,
+      shouldSteer: true,
+      shouldFollowup: true,
+      isActive: true,
+      followupRun,
+      replyOperation: createActiveReplyOperation(activeRun),
+    }),
+  );
+
+  expect(enqueueFollowupRunMock).toHaveBeenCalledOnce();
+  expect(queueEmbeddedAgentMessageWithOutcomeAsyncMock).not.toHaveBeenCalled();
+}
+
 function makeRunReplyAgentParams(
   overrides: Partial<Parameters<typeof runReplyAgent>[0]> & {
     provider?: string;
@@ -481,6 +517,56 @@ describe("runReplyAgent media path normalization", () => {
     expect(parkedSteerFallbackMock).not.toHaveBeenCalled();
   });
 
+  it("steers when only the auto-selected auth profile differs from the active run", async () => {
+    queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockImplementation(async (sessionId: string) => ({
+      queued: true,
+      sessionId,
+      target: "embedded_run",
+      gatewayHealth: "live",
+    }));
+    const activeRun = createMediaFollowupRun({
+      prompt: "compare these",
+      run: { authProfileId: "profile-a", authProfileIdSource: "auto" },
+    });
+    const followupRun = createMediaFollowupRun({
+      prompt: "compare these",
+      run: { ...activeRun.run, authProfileId: "profile-b", authProfileIdSource: "auto" },
+    });
+    const images = [{ type: "image" as const, data: "image", mimeType: "image/png" }];
+    followupRun.images = images;
+    followupRun.media = [{ path: "/tmp/image.png", contentType: "image/png" }];
+
+    await runReplyAgent(
+      makeRunReplyAgentParams({
+        resolvedQueue: { mode: "steer" } as QueueSettings,
+        shouldSteer: true,
+        shouldFollowup: true,
+        isActive: true,
+        followupRun,
+        replyOperation: createActiveReplyOperation(activeRun),
+      }),
+    );
+
+    expect(queueEmbeddedAgentMessageWithOutcomeAsyncMock).toHaveBeenLastCalledWith(
+      "session",
+      "compare these",
+      {
+        abortSignal: undefined,
+        steeringMode: "all",
+        isInboundUserMessage: true,
+        waitForTranscriptCommit: true,
+        queueIdentity: EXPECTED_STEER_QUEUE_IDENTITY,
+        onQueueAccepted: expect.any(Function),
+        images,
+        media: followupRun.media,
+        taskSuggestionDeliveryMode: undefined,
+        toolAuthorityFingerprint: resolveFollowupRunToolAuthorityFingerprint(followupRun),
+      },
+    );
+    expect(enqueueFollowupRunMock).not.toHaveBeenCalled();
+    expect(parkedSteerConsumeMock).toHaveBeenCalledOnce();
+  });
+
   it("steers ordered current-turn images with the active prompt", async () => {
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockImplementation(async (sessionId: string) => ({
       queued: true,
@@ -630,6 +716,12 @@ describe("runReplyAgent media path normalization", () => {
     expect(enqueueFollowupRunMock).toHaveBeenCalledOnce();
     expect(enqueueFollowupRunMock.mock.calls[0]?.[1].prompt).toBe("generate chart");
   });
+
+  it("still queues a follow-up when a user-selected auth profile differs from the active run", () =>
+    expectAuthProfileMismatchQueued("user"));
+
+  it("still queues a follow-up when a legacy auth profile differs from the active run", () =>
+    expectAuthProfileMismatchQueued(undefined));
 
   it("falls back to a queued followup when active steering is rejected", async () => {
     queueEmbeddedAgentMessageWithOutcomeAsyncMock.mockImplementation(async (sessionId: string) => ({

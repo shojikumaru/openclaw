@@ -374,6 +374,23 @@ describe("host-prepared embedded tool authority", () => {
     });
   });
 
+  it("ignores only auto-selected auth profile IDs in the authority fingerprint", () => {
+    const fingerprint = (authProfileId: string, authProfileIdSource: "auto" | "user" | undefined) =>
+      resolveFollowupRunToolAuthorityFingerprint({
+        run: {
+          ...attempt,
+          model: attempt.modelId,
+          runtimePolicySessionKey: attempt.sandboxSessionKey,
+          authProfileId,
+          authProfileIdSource,
+        },
+      });
+
+    expect(fingerprint("p1", "auto")).toBe(fingerprint("p2", "auto"));
+    expect(fingerprint("p1", "user")).not.toBe(fingerprint("p2", "user"));
+    expect(fingerprint("p1", undefined)).not.toBe(fingerprint("p2", undefined));
+  });
+
   it("rejects a weaker current sender under the real configured policy", async () => {
     await published(
       async ({ handle, queue }) => {
