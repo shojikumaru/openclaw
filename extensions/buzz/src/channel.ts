@@ -11,6 +11,7 @@ import {
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
 } from "openclaw/plugin-sdk/status-helpers";
+import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { BuzzConfigSchema } from "./config-schema.js";
 import {
   listBuzzDirectoryGroupsFromConfig,
@@ -53,6 +54,23 @@ type BuzzProbeResult = {
   rooms: Array<{ id: string; name: string }>;
 };
 
+function resolveBuzzContextRoomId(toolContext?: {
+  currentChannelId?: string;
+  currentMessagingTarget?: string;
+}): string | undefined {
+  for (const candidate of [toolContext?.currentMessagingTarget, toolContext?.currentChannelId]) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      return parseBuzzTarget(candidate);
+    } catch {
+      // Ignore non-Buzz ambient targets instead of inheriting their thread state.
+    }
+  }
+  return undefined;
+}
+
 export const buzzPlugin = createChatChannelPlugin<ResolvedBuzzAccount, BuzzProbeResult>({
   base: {
     id: "buzz",
@@ -71,6 +89,41 @@ export const buzzPlugin = createChatChannelPlugin<ResolvedBuzzAccount, BuzzProbe
       threads: true,
     },
     threading: {
+      matchesToolContextTarget: ({ target, toolContext }) => {
+        try {
+          return parseBuzzTarget(target) === resolveBuzzContextRoomId(toolContext);
+        } catch {
+          return false;
+        }
+      },
+      buildToolContext: ({ context, hasRepliedRef }) => {
+        const currentMessagingTarget = normalizeOptionalString(context.To);
+        const nativeChannelId = normalizeOptionalString(context.NativeChannelId);
+        const currentThreadTs = normalizeOptionalString(context.MessageThreadId);
+        return {
+          currentChannelId: nativeChannelId ?? currentMessagingTarget,
+          currentChatType: context.ChatType === "group" ? "group" : undefined,
+          currentMessagingTarget,
+          currentThreadTs,
+          currentMessageId: context.CurrentMessageId,
+          replyToMode: context.ReplyToMode,
+          hasRepliedRef,
+          sameChannelThreadRequired: Boolean(currentThreadTs),
+        };
+      },
+      resolveAutoThreadId: ({ to, toolContext }) => {
+        const currentThreadId = normalizeOptionalString(toolContext?.currentThreadTs);
+        if (!currentThreadId || toolContext?.replyToMode === "off") {
+          return undefined;
+        }
+        try {
+          return parseBuzzTarget(to) === resolveBuzzContextRoomId(toolContext)
+            ? currentThreadId
+            : undefined;
+        } catch {
+          return undefined;
+        }
+      },
       resolveReplyTransport: ({ replyDelivery, threadId, replyToId, replyToIsExplicit }) => {
         if (replyDelivery?.replyToMode === "off") {
           return { threadId: null, replyToId: null };
